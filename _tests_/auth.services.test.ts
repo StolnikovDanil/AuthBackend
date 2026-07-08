@@ -14,6 +14,7 @@ vi.mock('../src/prisma.js', () => ({
     },
 }));
 
+
 vi.mock('bcrypt', () => ({
     default: {
         compare: vi.fn(),
