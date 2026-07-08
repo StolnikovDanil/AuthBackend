@@ -66,7 +66,6 @@ describe('auth.services', () => {
                 id: 1,
                 email: 'test@example.com',
                 name: 'Test',
-                password: 'hashed-in-users-service',
                 role: 'USER',
                 createdAt: new Date(),
             };

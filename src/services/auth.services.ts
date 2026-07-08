@@ -22,8 +22,7 @@ export const register = async (email: string, password: string, name?: string) =
 
     logger.info({ userId: user.id, email: user.email }, 'User registered');
 
-    const { password: _, ...userWithoutPassword } = user;
-    return userWithoutPassword;
+    return user;
 };
 
 export const login = async (email: string, password: string) => {

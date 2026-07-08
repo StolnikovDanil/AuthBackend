@@ -4,13 +4,28 @@ import {SALT_ROUNDS} from "../constants/app.constants.js";
 
 
 export const getAll = () => {
-    return prisma.user.findMany();
+    return prisma.user.findMany({
+        select: {
+            id: true,
+            email: true,
+            name: true,
+            role: true,
+            createdAt: true
+        }
+    });
 }
 
 export const createUser = async (name: string | undefined, email: string, password: string) => {
     const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
     return prisma.user.create({
-        data: { name: name ?? null, email, password: hashedPassword }
+        data: { name: name ?? null, email, password: hashedPassword },
+        select: {
+            id: true,
+            email: true,
+            name: true,
+            role: true,
+            createdAt: true
+        }
     });
 };
 
