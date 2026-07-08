@@ -15,19 +15,6 @@ export const getUsers = async (
         }
 }
 
-export const createUser = async (
-    req: Request, res: Response, next: NextFunction) => {
-
-    const {name , email, password } = req.body
-
-    try {
-        const user = await UserServices.createUser(name, email, password)
-        res.status(201).json(user)
-    }
-    catch (error) {
-        next(error);
-    }
-}
 
 export const deleteUser = async (
     req: Request, res: Response, next: NextFunction) => {

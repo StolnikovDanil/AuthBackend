@@ -31,16 +31,28 @@ export const createUser = async (name: string | undefined, email: string, passwo
 
 export const deleteUser = (id: number) => {
     return prisma.user.delete({
-            where: {id},
-
+        where: { id },
+        select: {
+            id: true,
+            email: true,
+            name: true,
+            role: true,
+            createdAt: true
         }
-    )
+    })
 }
 
 export const updateUser = (
     id: number, name: string, email: string) => {
     return prisma.user.update({
         where: { id},
-        data: { name, email }
+        data: { name, email },
+        select: {
+            id: true,
+            email: true,
+            name: true,
+            role: true,
+            createdAt: true
+        }
     })
 }

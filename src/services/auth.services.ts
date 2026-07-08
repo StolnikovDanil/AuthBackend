@@ -55,11 +55,10 @@ export const login = async (email: string, password: string) => {
 
 export const refresh = async (oldRefreshToken: string) => {
 
-    let payload: { userId: number };
+    let payload: { userId: number; role: string };
 
     try {
-        payload = jwt.verify(oldRefreshToken, REFRESH_SECRET) as { userId: number };
-    } catch (err) {
+        payload = jwt.verify(oldRefreshToken, REFRESH_SECRET) as { userId: number; role: string };    } catch (err) {
         logger.warn('Refresh attempt with invalid token signature');
         throw new Error('INVALID_REFRESH_TOKEN');
     }
