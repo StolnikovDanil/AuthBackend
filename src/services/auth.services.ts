@@ -18,8 +18,7 @@ const generateTokens = (userId: number, role: string) => {
 };
 
 export const register = async (email: string, password: string, name?: string) => {
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const user = await usersService.createUser(name, email, hashedPassword);
+    const user = await usersService.createUser(name, email, password);
 
     logger.info({ userId: user.id, email: user.email }, 'User registered');
 

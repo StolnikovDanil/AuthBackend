@@ -10,3 +10,5 @@ export const authLimit = rateLimit({
     max: 10,
     message: 'Too many requests from this IP, please try again later.'
 });
+
+export const SALT_ROUNDS = 10;
