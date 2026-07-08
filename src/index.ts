@@ -31,6 +31,8 @@ app.get('/', (_req, res) => {
 
 app.use('/auth/register', authLimit);
 app.use('/auth/login', authLimit);
+app.use('/auth/refresh', authLimit);
+app.use('/auth/logout', authLimit);
 app.use('/auth', authRoutes);
 app.use('/users', usersRouter);
 
