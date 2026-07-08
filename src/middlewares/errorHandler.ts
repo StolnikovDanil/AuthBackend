@@ -10,6 +10,15 @@ export const errorHandler = (
 ) => {
     logger.error({ error }, 'Unhandled error');
 
+    if (error instanceof Error) {
+        switch (error.message) {
+            case "INVALID_CREDENTIALS":
+                return res.status(401).json({ error: 'Неверный email или пароль' });
+
+            case "INVALID_REFRESH_TOKEN":
+                return res.status(401).json({ error: 'Неверный или истёкший refresh-токен' });
+        }
+    }
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
         switch (error.code) {
@@ -21,9 +30,6 @@ export const errorHandler = (
 
             case "P2023":
                 return res.status(400).json({ error: "Неверный формат данных" });
-            case "INVALID_CREDENTIALS":
-                return res.status(401).json({ error: 'Неверный email или пароль' });
-
         }
     }
 
