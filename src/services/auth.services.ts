@@ -4,8 +4,12 @@ import { prisma } from '../prisma.js';
 import * as usersService from './users.service.js';
 import { logger } from '../utils/logger.js';
 
-const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET!;
-const REFRESH_SECRET = process.env.JWT_REFRESH_SECRET!;
+const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET;
+const REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
+
+if (!ACCESS_SECRET || !REFRESH_SECRET) {
+    throw new Error('JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be set');
+}
 
 const generateTokens = (userId: number, role: string) => {
     const accessToken = jwt.sign({ userId, role }, ACCESS_SECRET, { expiresIn: '15m' });
@@ -67,6 +71,13 @@ export const refresh = async (oldRefreshToken: string) => {
 
     if (!storedToken) {
         logger.warn({ userId: payload.userId }, 'Refresh attempt with token not found in DB (possibly reused/stolen)');
+        await prisma.refreshToken.deleteMany({ where: { userId: payload.userId } });
+        throw new Error('INVALID_REFRESH_TOKEN');
+    }
+
+    if (storedToken.expiresAt < new Date()) {
+        await prisma.refreshToken.delete({ where: { id: storedToken.id } });
+        logger.warn({ userId: payload.userId }, 'Refresh attempt with expired token');
         throw new Error('INVALID_REFRESH_TOKEN');
     }
 
@@ -95,6 +106,6 @@ export const refresh = async (oldRefreshToken: string) => {
 }
 
 export const logout = async (refreshToken: string) => {
-    await prisma.refreshToken.delete({ where: { token: refreshToken } });
+    await prisma.refreshToken.deleteMany({ where: { token: refreshToken } });
     logger.info('User logged out');
 }
