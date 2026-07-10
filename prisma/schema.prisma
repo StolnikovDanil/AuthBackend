@@ -18,6 +18,23 @@ model RefreshToken {
   @@map("refresh_tokens")
 }
 
+model LoginAttempt {
+  id        Int      @id @default(autoincrement())
+  userId    Int?
+  email     String
+  success   Boolean
+  ip        String
+  userAgent String?
+  country   String?
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([email, createdAt])
+  @@index([success, createdAt])
+  @@map("login_attempts")
+}
+
 enum Role {
   USER
   ADMIN
@@ -31,6 +48,7 @@ model User {
   role          Role           @default(USER)
   createdAt     DateTime       @default(now())
   refreshTokens RefreshToken[]
+  loginAttempts LoginAttempt[]
 
   @@map("users")
 }

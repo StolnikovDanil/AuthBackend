@@ -1,12 +1,8 @@
 import type { Request, Response, NextFunction } from 'express';
 import * as authService from '../services/auth.services.js';
+import {REFRESH_COOKIE_OPTIONS} from "../constants/app.constants.js";
 
-const REFRESH_COOKIE_OPTIONS = {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax' as const,
-    maxAge: 7 * 24 * 60 * 60 * 1000
-};
+const { maxAge: _maxAge, ...CLEAR_REFRESH_COOKIE_OPTIONS } = REFRESH_COOKIE_OPTIONS;
 
 export const register = async (req: Request, res: Response, next: NextFunction) => {
     const { email, password, name } = req.body;
@@ -23,7 +19,12 @@ export const login = async (req: Request, res: Response, next: NextFunction) => 
     const {email, password} = req.body;
 
     try {
-        const { accessToken, refreshToken } = await authService.login(email, password);
+        const { accessToken, refreshToken } = await authService.login(
+            email,
+            password,
+            req.ip ?? 'unknown',
+            req.headers['user-agent']
+        );
 
         res.cookie('refreshToken', refreshToken, REFRESH_COOKIE_OPTIONS);
         res.json({ accessToken });
@@ -46,6 +47,7 @@ export const refresh = async (req: Request, res: Response, next: NextFunction) =
         res.json({ accessToken });
     }
     catch (error) {
+        res.clearCookie('refreshToken', CLEAR_REFRESH_COOKIE_OPTIONS);
         next(error);
     }
 }
@@ -58,7 +60,7 @@ export const logout = async (req: Request, res: Response, next: NextFunction) =>
             await authService.logout(refreshToken)
         }
 
-        res.clearCookie('refreshToken');
+        res.clearCookie('refreshToken', CLEAR_REFRESH_COOKIE_OPTIONS);
         res.json({ message: 'Logged out' });
     }
     catch (error) {

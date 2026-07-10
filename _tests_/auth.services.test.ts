@@ -11,6 +11,9 @@ vi.mock('../src/prisma.js', () => ({
             delete: vi.fn(),
             deleteMany: vi.fn(),
         },
+        loginAttempt: {
+            create: vi.fn(),
+        },
     },
 }));
 
@@ -46,6 +49,9 @@ import jwt from 'jsonwebtoken';
 import * as usersService from '../src/services/users.service.js';
 
 let authService: typeof import('../src/services/auth.services.js');
+
+const TEST_IP = '127.0.0.1';
+const TEST_USER_AGENT = 'vitest-agent';
 
 beforeAll(async () => {
     process.env.JWT_ACCESS_SECRET = 'test-access-secret';
@@ -87,16 +93,25 @@ describe('auth.services', () => {
     });
 
     describe('login', () => {
-        it('бросает ошибку, если пользователь не найден', async () => {
+        it('бросает ошибку, если пользователь не найден, и логирует попытку с userId: null', async () => {
             vi.mocked(prisma.user.findUnique).mockResolvedValue(null);
 
-            await expect(authService.login('unknown@example.com', 'password'))
+            await expect(authService.login('unknown@example.com', 'password', TEST_IP, TEST_USER_AGENT))
                 .rejects.toThrow('INVALID_CREDENTIALS');
 
             expect(bcrypt.compare).not.toHaveBeenCalled();
+            expect(prisma.loginAttempt.create).toHaveBeenCalledWith({
+                data: {
+                    userId: null,
+                    email: 'unknown@example.com',
+                    success: false,
+                    ip: TEST_IP,
+                    userAgent: TEST_USER_AGENT,
+                },
+            });
         });
 
-        it('бросает ошибку при неверном пароле', async () => {
+        it('бросает ошибку при неверном пароле и логирует неуспешную попытку', async () => {
             vi.mocked(prisma.user.findUnique).mockResolvedValue({
                 id: 1,
                 email: 'test@example.com',
@@ -105,13 +120,22 @@ describe('auth.services', () => {
             } as any);
             vi.mocked(bcrypt.compare).mockResolvedValue(false as never);
 
-            await expect(authService.login('test@example.com', 'wrongPassword'))
+            await expect(authService.login('test@example.com', 'wrongPassword', TEST_IP, TEST_USER_AGENT))
                 .rejects.toThrow('INVALID_CREDENTIALS');
 
             expect(prisma.refreshToken.create).not.toHaveBeenCalled();
+            expect(prisma.loginAttempt.create).toHaveBeenCalledWith({
+                data: {
+                    userId: 1,
+                    email: 'test@example.com',
+                    success: false,
+                    ip: TEST_IP,
+                    userAgent: TEST_USER_AGENT,
+                },
+            });
         });
 
-        it('возвращает токены и сохраняет refresh-токен при успешном логине', async () => {
+        it('возвращает токены, сохраняет refresh-токен и логирует успешную попытку при успешном логине', async () => {
             vi.mocked(prisma.user.findUnique).mockResolvedValue({
                 id: 1,
                 email: 'test@example.com',
@@ -123,7 +147,7 @@ describe('auth.services', () => {
                 .mockReturnValueOnce('access-token' as any)
                 .mockReturnValueOnce('refresh-token' as any);
 
-            const result = await authService.login('test@example.com', 'correctPassword');
+            const result = await authService.login('test@example.com', 'correctPassword', TEST_IP, TEST_USER_AGENT);
 
             expect(result).toEqual({ accessToken: 'access-token', refreshToken: 'refresh-token' });
             expect(prisma.refreshToken.create).toHaveBeenCalledWith(
@@ -134,6 +158,33 @@ describe('auth.services', () => {
                     }),
                 })
             );
+            expect(prisma.loginAttempt.create).toHaveBeenCalledWith({
+                data: {
+                    userId: 1,
+                    email: 'test@example.com',
+                    success: true,
+                    ip: TEST_IP,
+                    userAgent: TEST_USER_AGENT,
+                },
+            });
+        });
+
+        it('не бросает ошибку наружу, если запись LoginAttempt не удалась', async () => {
+            vi.mocked(prisma.user.findUnique).mockResolvedValue({
+                id: 1,
+                email: 'test@example.com',
+                password: 'hashed',
+                role: 'USER',
+            } as any);
+            vi.mocked(bcrypt.compare).mockResolvedValue(true as never);
+            vi.mocked(jwt.sign)
+                .mockReturnValueOnce('access-token' as any)
+                .mockReturnValueOnce('refresh-token' as any);
+            vi.mocked(prisma.loginAttempt.create).mockRejectedValue(new Error('DB down'));
+
+            const result = await authService.login('test@example.com', 'correctPassword', TEST_IP, TEST_USER_AGENT);
+
+            expect(result).toEqual({ accessToken: 'access-token', refreshToken: 'refresh-token' });
         });
     });
 
