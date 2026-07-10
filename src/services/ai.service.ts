@@ -1,6 +1,7 @@
 import { logger } from '../utils/logger.js';
+import {RETRYABLE_STATUS_CODES, MAX_RETRIES, BASE_RETRY_DELAY_MS} from "../constants/app.constants.js";
 
-const GEMINI_MODEL = 'gemini-2.5-flash-lite';
+const GEMINI_MODEL = 'gemini-flash-latest';
 const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const REQUEST_TIMEOUT_MS = 10_000;
 
@@ -53,13 +54,28 @@ const stripMarkdownFence = (text: string): string => {
         .trim();
 };
 
-export const generateInsightsSummary = async (promptData: object): Promise<InsightsResult> => {
-    const apiKey = getApiKey();
+const logAvailableModelsIfDev = async (apiKey: string): Promise<void> => {
+    if (process.env.NODE_ENV !== 'development') return;
 
+    try {
+        const checkRes = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`
+        );
+        const checkData = await checkRes.json();
+        const availableModels = checkData?.models?.map((m: { name: string }) => m.name);
+        logger.debug({ availableModels }, 'Available Gemini models');
+    } catch (err) {
+        logger.warn({ err }, 'Failed to list available Gemini models');
+    }
+};
+
+
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+const callGeminiOnce = async (apiKey: string, promptData: object): Promise<string> => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
-    let rawText: string;
 
     try {
         const response = await fetch(GEMINI_ENDPOINT, {
@@ -70,14 +86,17 @@ export const generateInsightsSummary = async (promptData: object): Promise<Insig
             },
             signal: controller.signal,
             body: JSON.stringify({
+                system_instruction: {
+                    parts: [{ text: SYSTEM_INSTRUCTIONS }]
+                },
                 contents: [
                     {
                         role: 'user',
-                        parts: [{ text: `${SYSTEM_INSTRUCTIONS}\n\nДанные:\n${JSON.stringify(promptData)}` }]
+                        parts: [{ text: `Данные для анализа:\n${JSON.stringify(promptData)}` }]
                     }
                 ],
-                generationConfig: {
-                    responseMimeType: 'application/json',
+                generation_config: {
+                    response_mime_type: 'application/json',
                     temperature: 0.2
                 }
             })
@@ -85,26 +104,61 @@ export const generateInsightsSummary = async (promptData: object): Promise<Insig
 
         if (!response.ok) {
             const errorBody = await response.text().catch(() => '');
-            throw new Error(`Gemini API responded with ${response.status}: ${errorBody}`);
+            const err = new Error(`Gemini API responded with ${response.status}: ${errorBody}`) as Error & { status?: number };
+            err.status = response.status;
+            throw err;
         }
 
         const data = await response.json();
-        rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
         if (typeof rawText !== 'string' || rawText.length === 0) {
             throw new Error('Gemini API returned an empty response');
         }
-    } catch (err) {
+
+        return rawText;
+    } finally {
         clearTimeout(timeoutId);
-        if (err instanceof Error && err.name === 'AbortError') {
+    }
+};
+
+export const generateInsightsSummary = async (promptData: object): Promise<InsightsResult> => {
+    const apiKey = getApiKey();
+
+    await logAvailableModelsIfDev(apiKey);
+
+    let rawText!: string;
+    let lastErr: unknown;
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            rawText = await callGeminiOnce(apiKey, promptData);
+            lastErr = undefined;
+            break;
+        } catch (err) {
+            lastErr = err;
+            const status = (err as { status?: number })?.status;
+            const isAbort = err instanceof Error && err.name === 'AbortError';
+            const isRetryable = !isAbort && status !== undefined && RETRYABLE_STATUS_CODES.has(status);
+
+            if (!isRetryable || attempt === MAX_RETRIES) {
+                break;
+            }
+
+            const delay = BASE_RETRY_DELAY_MS * 2 ** attempt;
+            logger.warn({ status, attempt: attempt + 1, delay }, 'Gemini API transient error, retrying');
+            await sleep(delay);
+        }
+    }
+
+    if (lastErr !== undefined) {
+        if (lastErr instanceof Error && lastErr.name === 'AbortError') {
             logger.error('Gemini API request timed out');
             throw new Error('AI_REQUEST_TIMEOUT');
         }
-        logger.error({ err }, 'Gemini API request failed');
+        logger.error({ err: lastErr }, 'Gemini API request failed');
         throw new Error('AI_REQUEST_FAILED');
     }
-
-    clearTimeout(timeoutId);
 
     try {
         const parsed = JSON.parse(stripMarkdownFence(rawText));

@@ -45,3 +45,7 @@ export const REFRESH_COOKIE_OPTIONS = {
 };
 
 export const DEFAULT_PERIOD_HOURS = 24;
+
+export const RETRYABLE_STATUS_CODES = new Set([429, 503]);
+export const MAX_RETRIES = 2;
+export const BASE_RETRY_DELAY_MS = 500;
