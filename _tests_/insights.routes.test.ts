@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeAll } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
 
+vi.mock('pino-http', () => ({
+    pinoHttp: vi.fn(() => {
+        return (_req: any, _res: any, next: any) => next();
+    }),
+}));
+
 vi.mock('../src/prisma.js', () => ({
     prisma: {
         user: { findUnique: vi.fn() },
@@ -10,13 +16,20 @@ vi.mock('../src/prisma.js', () => ({
     },
 }));
 
-vi.mock('../src/utils/logger.js', () => ({
-    logger: {
+vi.mock('../src/utils/logger.js', () => {
+    const mockLogger: Record<string, unknown> = {
         info: vi.fn(),
         warn: vi.fn(),
         error: vi.fn(),
-    },
-}));
+        debug: vi.fn(),
+        fatal: vi.fn(),
+        trace: vi.fn(),
+        silent: vi.fn(),
+    };
+    // pino-http calls logger.child(...) internally to create a per-request logger.
+    mockLogger.child = vi.fn(() => mockLogger);
+    return { logger: mockLogger };
+});
 
 const ACCESS_SECRET = 'test-access-secret';
 

@@ -61,32 +61,72 @@ describe('insights.service', () => {
             expect(result.totalAttempts).toBe(4);
             expect(result.successCount).toBe(1);
             expect(result.failedCount).toBe(3);
-            // 2.2.2.2 встречается дважды среди неуспешных, но должен считаться один раз
             expect(result.uniqueFailedIps).toBe(2);
         });
 
         it('считает trailing-серию подряд неуспешных попыток по одному аккаунту', async () => {
-            vi.mocked(prisma.loginAttempt.findMany).mockResolvedValueOnce([
-                attempt({ userId: 1, email: 'a@example.com', success: true, createdAt: new Date('2026-07-09T10:00:00Z') }),
-                attempt({ userId: 1, email: 'a@example.com', success: false, createdAt: new Date('2026-07-09T10:05:00Z') }),
-                attempt({ userId: 1, email: 'a@example.com', success: false, createdAt: new Date('2026-07-09T10:10:00Z') }),
-                attempt({ userId: 1, email: 'a@example.com', success: false, createdAt: new Date('2026-07-09T10:15:00Z') }),
-            ] as any);
+            vi.mocked(prisma.loginAttempt.findMany)
+                .mockResolvedValueOnce([
+                    attempt({
+                        userId: 1,
+                        email: 'a@example.com',
+                        success: true,
+                        createdAt: new Date('2026-07-09T10:00:00Z'),
+                    }),
+                    attempt({
+                        userId: 1,
+                        email: 'a@example.com',
+                        success: false,
+                        createdAt: new Date('2026-07-09T10:05:00Z'),
+                    }),
+                    attempt({
+                        userId: 1,
+                        email: 'a@example.com',
+                        success: false,
+                        createdAt: new Date('2026-07-09T10:10:00Z'),
+                    }),
+                    attempt({
+                        userId: 1,
+                        email: 'a@example.com',
+                        success: false,
+                        createdAt: new Date('2026-07-09T10:15:00Z'),
+                    }),
+                ] as any)
+                .mockResolvedValueOnce([]);
+
             vi.mocked(prisma.loginAttempt.count).mockResolvedValueOnce(0);
 
             const result = await buildInsightsPayload(24);
 
             expect(result.topFailStreaks).toEqual([
-                { target: 'user_1', consecutiveFailures: 3 },
+                {
+                    target: 'user-1',
+                    consecutiveFailures: 3,
+                },
             ]);
         });
 
         it('обнуляет серию после успешной попытки в конце', async () => {
-            vi.mocked(prisma.loginAttempt.findMany).mockResolvedValueOnce([
-                attempt({ userId: 1, success: false, createdAt: new Date('2026-07-09T10:00:00Z') }),
-                attempt({ userId: 1, success: false, createdAt: new Date('2026-07-09T10:05:00Z') }),
-                attempt({ userId: 1, success: true, createdAt: new Date('2026-07-09T10:10:00Z') }),
-            ] as any);
+            vi.mocked(prisma.loginAttempt.findMany)
+                .mockResolvedValueOnce([
+                    attempt({
+                        userId: 1,
+                        success: false,
+                        createdAt: new Date('2026-07-09T10:00:00Z'),
+                    }),
+                    attempt({
+                        userId: 1,
+                        success: false,
+                        createdAt: new Date('2026-07-09T10:05:00Z'),
+                    }),
+                    attempt({
+                        userId: 1,
+                        success: true,
+                        createdAt: new Date('2026-07-09T10:10:00Z'),
+                    }),
+                ] as any)
+                .mockResolvedValueOnce([]);
+
             vi.mocked(prisma.loginAttempt.count).mockResolvedValueOnce(0);
 
             const result = await buildInsightsPayload(24);
@@ -104,15 +144,21 @@ describe('insights.service', () => {
             const result = await buildInsightsPayload(24);
 
             expect(result.topFailStreaks).toHaveLength(1);
-            expect(result.topFailStreaks[0]!.target).toMatch(/^hash_[0-9a-f]{10}$/);
-            expect(result.topFailStreaks[0]!.target).not.toContain('ghost');
-            expect(result.topFailStreaks[0]!.consecutiveFailures).toBe(2);
+
+            expect(result.topFailStreaks[0]!.target)
+                .toMatch(/^[0-9a-f]{10}$/);
+
+            expect(result.topFailStreaks[0]!.target)
+                .not.toContain('ghost');
+
+            expect(result.topFailStreaks[0]!.consecutiveFailures)
+                .toBe(2);
         });
 
         it('считает changePercent относительно предыдущего периода', async () => {
             vi.mocked(prisma.loginAttempt.findMany).mockResolvedValueOnce([
                 attempt({}), attempt({}), attempt({}), attempt({}),
-            ] as any);
+            ] as any );
             vi.mocked(prisma.loginAttempt.count).mockResolvedValueOnce(2);
 
             const result = await buildInsightsPayload(24);

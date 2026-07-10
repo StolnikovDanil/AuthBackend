@@ -7,7 +7,6 @@ vi.mock('../src/prisma.js', () => ({
         },
         refreshToken: {
             create: vi.fn(),
-            findUnique: vi.fn(),
             delete: vi.fn(),
             deleteMany: vi.fn(),
         },
@@ -197,68 +196,91 @@ describe('auth.services', () => {
             await expect(authService.refresh('bad-token'))
                 .rejects.toThrow('INVALID_REFRESH_TOKEN');
 
-            expect(prisma.refreshToken.findUnique).not.toHaveBeenCalled();
+            expect(prisma.refreshToken.delete).not.toHaveBeenCalled();
         });
 
-        it('бросает ошибку и отзывает все токены пользователя, если токен не найден в БД', async () => {
-            vi.mocked(jwt.verify).mockReturnValue({ userId: 1 } as any);
-            vi.mocked(prisma.refreshToken.findUnique).mockResolvedValue(null);
-
-            await expect(authService.refresh('valid-but-unknown-token'))
-                .rejects.toThrow('INVALID_REFRESH_TOKEN');
-
-            expect(prisma.refreshToken.deleteMany).toHaveBeenCalledWith({ where: { userId: 1 } });
-        });
-
-        it('бросает ошибку и удаляет токен, если он просрочен', async () => {
-            vi.mocked(jwt.verify).mockReturnValue({ userId: 1 } as any);
-            vi.mocked(prisma.refreshToken.findUnique).mockResolvedValue({
-                id: 10,
-                token: 'expired-token',
+        it('бросает ошибку, если refresh-токен уже был использован', async () => {
+            vi.mocked(jwt.verify).mockReturnValue({
                 userId: 1,
+                role: 'USER',
+            } as any);
+
+            vi.mocked(prisma.refreshToken.delete).mockRejectedValue({
+                code: 'P2025',
+                message: 'Record not found',
+            } as any);
+
+            await expect(
+                authService.refresh('valid-but-unknown-token')
+            ).rejects.toThrow('Record not found');
+
+            expect(prisma.refreshToken.deleteMany).not.toHaveBeenCalled();
+        });
+
+        it('бросает ошибку, если токен просрочен', async () => {
+            vi.mocked(jwt.verify).mockReturnValue({
+                userId: 1,
+                role: 'USER',
+            } as any);
+
+            vi.mocked(prisma.refreshToken.delete).mockResolvedValue({
+                id: 10,
                 expiresAt: new Date(Date.now() - 1000),
             } as any);
 
-            await expect(authService.refresh('expired-token'))
-                .rejects.toThrow('INVALID_REFRESH_TOKEN');
+            await expect(
+                authService.refresh('expired-token')
+            ).rejects.toThrow('INVALID_REFRESH_TOKEN');
 
-            expect(prisma.refreshToken.delete).toHaveBeenCalledWith({ where: { id: 10 } });
             expect(prisma.user.findUnique).not.toHaveBeenCalled();
         });
 
         it('бросает ошибку, если пользователь не найден', async () => {
-            vi.mocked(jwt.verify).mockReturnValue({ userId: 1 } as any);
-            vi.mocked(prisma.refreshToken.findUnique).mockResolvedValue({
-                id: 10,
-                token: 'valid-token',
+            vi.mocked(jwt.verify).mockReturnValue({
                 userId: 1,
-                expiresAt: new Date(Date.now() + 1000 * 60 * 60),
+                role: 'USER',
             } as any);
+
+            vi.mocked(prisma.refreshToken.delete).mockResolvedValue({
+                id: 10,
+                expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+            } as any);
+
             vi.mocked(prisma.user.findUnique).mockResolvedValue(null);
 
-            await expect(authService.refresh('valid-token'))
-                .rejects.toThrow('INVALID_REFRESH_TOKEN');
+            await expect(
+                authService.refresh('valid-token')
+            ).rejects.toThrow('INVALID_REFRESH_TOKEN');
         });
 
         it('ротирует токен и возвращает новую пару при успехе', async () => {
-            vi.mocked(jwt.verify).mockReturnValue({ userId: 1 } as any);
-            vi.mocked(prisma.refreshToken.findUnique).mockResolvedValue({
-                id: 10,
-                token: 'old-refresh-token',
+            vi.mocked(jwt.verify).mockReturnValue({
                 userId: 1,
-                expiresAt: new Date(Date.now() + 1000 * 60 * 60),
+                role: 'USER',
             } as any);
+
+            vi.mocked(prisma.refreshToken.delete).mockResolvedValue({
+                id: 10,
+                expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+            } as any);
+
             vi.mocked(prisma.user.findUnique).mockResolvedValue({
                 id: 1,
                 role: 'USER',
             } as any);
+
             vi.mocked(jwt.sign)
                 .mockReturnValueOnce('new-access-token' as any)
                 .mockReturnValueOnce('new-refresh-token' as any);
 
             const result = await authService.refresh('old-refresh-token');
 
-            expect(prisma.refreshToken.delete).toHaveBeenCalledWith({ where: { id: 10 } });
+            expect(prisma.refreshToken.delete).toHaveBeenCalledWith({
+                where: {
+                    token: 'old-refresh-token',
+                },
+            });
+
             expect(prisma.refreshToken.create).toHaveBeenCalledWith(
                 expect.objectContaining({
                     data: expect.objectContaining({
@@ -267,7 +289,11 @@ describe('auth.services', () => {
                     }),
                 })
             );
-            expect(result).toEqual({ accessToken: 'new-access-token', refreshToken: 'new-refresh-token' });
+
+            expect(result).toEqual({
+                accessToken: 'new-access-token',
+                refreshToken: 'new-refresh-token',
+            });
         });
     });
 
