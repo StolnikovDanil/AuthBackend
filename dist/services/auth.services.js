@@ -1,6 +1,7 @@
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../prisma.js';
+import { Prisma } from '../generated/prisma/client.js';
 import * as usersService from './users.service.js';
 import { logger } from '../utils/logger.js';
 const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET;
@@ -68,14 +69,18 @@ export const refresh = async (oldRefreshToken) => {
         logger.warn('Refresh attempt with invalid token signature');
         throw new Error('INVALID_REFRESH_TOKEN');
     }
-    const storedToken = await prisma.refreshToken.findUnique({ where: { token: oldRefreshToken } });
-    if (!storedToken) {
-        logger.warn({ userId: payload.userId }, 'Refresh attempt with token not found in DB (possibly reused/stolen)');
-        await prisma.refreshToken.deleteMany({ where: { userId: payload.userId } });
-        throw new Error('INVALID_REFRESH_TOKEN');
+    let storedToken;
+    try {
+        storedToken = await prisma.refreshToken.delete({ where: { token: oldRefreshToken } });
+    }
+    catch (err) {
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025') {
+            logger.warn({ userId: payload.userId }, 'Refresh token already consumed (concurrent request or reuse) - rejecting without mass session invalidation');
+            throw new Error('INVALID_REFRESH_TOKEN');
+        }
+        throw err;
     }
     if (storedToken.expiresAt < new Date()) {
-        await prisma.refreshToken.delete({ where: { id: storedToken.id } });
         logger.warn({ userId: payload.userId }, 'Refresh attempt with expired token');
         throw new Error('INVALID_REFRESH_TOKEN');
     }
@@ -84,7 +89,6 @@ export const refresh = async (oldRefreshToken) => {
         logger.warn({ userId: payload.userId }, 'Refresh attempt for non-existent user');
         throw new Error('INVALID_REFRESH_TOKEN');
     }
-    await prisma.refreshToken.delete({ where: { id: storedToken.id } });
     const { accessToken, refreshToken } = generateTokens(user.id, user.role);
     await prisma.refreshToken.create({
         data: {

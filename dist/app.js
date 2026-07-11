@@ -8,7 +8,7 @@ import cors from 'cors';
 import helmet from "helmet";
 import { pinoHttp } from 'pino-http';
 import { logger } from "./utils/logger.js";
-import { allowedOrigins, authLimit, insightsLimit } from './constants/app.constants.js';
+import { allowedOrigins, registerLimit, loginLimit, refreshLimit, insightsLimit } from './constants/app.constants.js';
 const app = express();
 app.use(helmet());
 app.use(cors({
@@ -21,10 +21,9 @@ app.use(cookieParser());
 app.get('/', (_req, res) => {
     res.json({ message: 'Server is running' });
 });
-app.use('/auth/register', authLimit);
-app.use('/auth/login', authLimit);
-app.use('/auth/refresh', authLimit);
-app.use('/auth/logout', authLimit);
+app.use('/auth/register', registerLimit);
+app.use('/auth/login', loginLimit);
+app.use('/auth/refresh', refreshLimit);
 app.use('/auth', authRoutes);
 app.use('/users', usersRouter);
 app.use('/admin/insights', insightsLimit);

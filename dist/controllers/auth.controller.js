@@ -1,5 +1,6 @@
 import * as authService from '../services/auth.services.js';
-import { REFRESH_COOKIE_OPTIONS } from '../constants/app.constants.js';
+import { REFRESH_COOKIE_OPTIONS } from "../constants/app.constants.js";
+const { maxAge: _maxAge, ...CLEAR_REFRESH_COOKIE_OPTIONS } = REFRESH_COOKIE_OPTIONS;
 export const register = async (req, res, next) => {
     const { email, password, name } = req.body;
     try {
@@ -32,6 +33,7 @@ export const refresh = async (req, res, next) => {
         res.json({ accessToken });
     }
     catch (error) {
+        res.clearCookie('refreshToken', CLEAR_REFRESH_COOKIE_OPTIONS);
         next(error);
     }
 };
@@ -41,7 +43,7 @@ export const logout = async (req, res, next) => {
         if (refreshToken) {
             await authService.logout(refreshToken);
         }
-        res.clearCookie('refreshToken');
+        res.clearCookie('refreshToken', CLEAR_REFRESH_COOKIE_OPTIONS);
         res.json({ message: 'Logged out' });
     }
     catch (error) {

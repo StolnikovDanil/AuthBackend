@@ -1,5 +1,6 @@
 import { logger } from '../utils/logger.js';
-const GEMINI_MODEL = 'gemini-2.5-flash-lite';
+import { RETRYABLE_STATUS_CODES, MAX_RETRIES, BASE_RETRY_DELAY_MS } from "../constants/app.constants.js";
+const GEMINI_MODEL = 'gemini-flash-latest';
 const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const REQUEST_TIMEOUT_MS = 10_000;
 const SYSTEM_INSTRUCTIONS = `Ты - security-аналитик, который анализирует агрегированную,
@@ -39,59 +40,105 @@ const stripMarkdownFence = (text) => {
         .replace(/```\s*$/i, '')
         .trim();
 };
-export const generateInsightsSummary = async (promptData) => {
-    const apiKey = getApiKey();
+const logAvailableModelsIfDev = async (apiKey) => {
+    if (process.env.NODE_ENV !== 'development')
+        return;
+    try {
+        const checkRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+        const checkData = await checkRes.json();
+        const availableModels = checkData?.models?.map((m) => m.name);
+        logger.debug({ availableModels }, 'Available Gemini models');
+    }
+    catch (err) {
+        logger.warn({ err }, 'Failed to list available Gemini models');
+    }
+};
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const callGeminiOnce = async (apiKey, promptData) => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    let rawText;
     try {
-        const response = await fetch(`${GEMINI_ENDPOINT}?key=${apiKey}`, {
+        const response = await fetch(GEMINI_ENDPOINT, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': apiKey
+            },
             signal: controller.signal,
             body: JSON.stringify({
+                system_instruction: {
+                    parts: [{ text: SYSTEM_INSTRUCTIONS }]
+                },
                 contents: [
                     {
                         role: 'user',
-                        parts: [{ text: `${SYSTEM_INSTRUCTIONS}\n\nДанные:\n${JSON.stringify(promptData)}` }]
+                        parts: [{ text: `Данные для анализа:\n${JSON.stringify(promptData)}` }]
                     }
                 ],
-                generationConfig: {
-                    responseMimeType: 'application/json',
+                generation_config: {
+                    response_mime_type: 'application/json',
                     temperature: 0.2
                 }
             })
         });
         if (!response.ok) {
             const errorBody = await response.text().catch(() => '');
-            throw new Error(`Gemini API responded with ${response.status}: ${errorBody}`);
+            const err = new Error(`Gemini API responded with ${response.status}: ${errorBody}`);
+            err.status = response.status;
+            throw err;
         }
         const data = await response.json();
-        rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
         if (typeof rawText !== 'string' || rawText.length === 0) {
             throw new Error('Gemini API returned an empty response');
         }
+        return rawText;
     }
-    catch (error) {
+    finally {
         clearTimeout(timeoutId);
-        clearTimeout(timeoutId);
-        if (error instanceof Error && error.name === 'AbortError') {
+    }
+};
+export const generateInsightsSummary = async (promptData) => {
+    const apiKey = getApiKey();
+    await logAvailableModelsIfDev(apiKey);
+    let rawText;
+    let lastErr;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            rawText = await callGeminiOnce(apiKey, promptData);
+            lastErr = undefined;
+            break;
+        }
+        catch (err) {
+            lastErr = err;
+            const status = err?.status;
+            const isAbort = err instanceof Error && err.name === 'AbortError';
+            const isRetryable = !isAbort && status !== undefined && RETRYABLE_STATUS_CODES.has(status);
+            if (!isRetryable || attempt === MAX_RETRIES) {
+                break;
+            }
+            const delay = BASE_RETRY_DELAY_MS * 2 ** attempt;
+            logger.warn({ status, attempt: attempt + 1, delay }, 'Gemini API transient error, retrying');
+            await sleep(delay);
+        }
+    }
+    if (lastErr !== undefined) {
+        if (lastErr instanceof Error && lastErr.name === 'AbortError') {
             logger.error('Gemini API request timed out');
             throw new Error('AI_REQUEST_TIMEOUT');
         }
-        logger.error({ error }, 'Gemini API request failed');
+        logger.error({ err: lastErr }, 'Gemini API request failed');
         throw new Error('AI_REQUEST_FAILED');
     }
-    clearTimeout(timeoutId);
     try {
-        const parser = JSON.parse(stripMarkdownFence(rawText));
-        if (!isValidInsightsResult(parser)) {
-            throw new Error('Invalid JSON response');
+        const parsed = JSON.parse(stripMarkdownFence(rawText));
+        if (!isValidInsightsResult(parsed)) {
+            throw new Error('Response shape does not match expected InsightsResult');
         }
-        return parser;
+        return parsed;
     }
-    catch (error) {
-        logger.warn({ error, rawText }, 'Failed to parse Gemini response as JSON, falling back to raw text');
+    catch (err) {
+        logger.warn({ err, rawText }, 'Failed to parse Gemini response as JSON, falling back to raw text');
         return { summary: rawText, riskFlags: [] };
     }
 };
