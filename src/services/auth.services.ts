@@ -1,10 +1,13 @@
 import bcrypt from 'bcrypt';
+import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../prisma.js';
-import { Prisma } from '../generated/prisma/client.js';
+import { redis} from "../../redis.js";
 import * as usersService from './users.service.js';
 import { logger } from '../utils/logger.js';
-import type {LoginAttempt} from "../types/login-attempt.js";
+import type { LoginAttempt } from '../types/login-attempt.js';
+import {REFRESH_GRACE_MS, REFRESH_TTL_MS} from "../constants/app.constants.js";
+import type {StoredRefreshToken} from "../types/stored-refresh-token.js";
 
 const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET;
 const REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
@@ -13,10 +16,21 @@ if (!ACCESS_SECRET || !REFRESH_SECRET) {
     throw new Error('JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be set');
 }
 
+const hashToken = (token: string): string =>
+    crypto.createHash('sha256').update(token).digest('hex');
+
+const refreshKey = (token: string): string => `refresh:${hashToken(token)}`;
+
 const generateTokens = (userId: number, role: string) => {
     const accessToken = jwt.sign({ userId, role }, ACCESS_SECRET, { expiresIn: '15m' });
     const refreshToken = jwt.sign({ userId, role }, REFRESH_SECRET, { expiresIn: '7d' });
     return { accessToken, refreshToken };
+};
+
+const storeRefreshToken = async (token: string, userId: number, role: string): Promise<void> => {
+    const expiresAt = Date.now() + REFRESH_TTL_MS;
+    const value: StoredRefreshToken = { userId, role, expiresAt };
+    await redis.set(refreshKey(token), JSON.stringify(value), 'PX', REFRESH_TTL_MS + REFRESH_GRACE_MS);
 };
 
 const recordLoginAttempt = async ({ userId, email, success, ip, userAgent }: LoginAttempt) => {
@@ -57,14 +71,7 @@ export const login = async (email: string, password: string, ip: string, userAge
     }
 
     const { accessToken, refreshToken } = generateTokens(user.id, user.role);
-
-    await prisma.refreshToken.create({
-        data: {
-            token: refreshToken,
-            userId: user.id,
-            expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-        }
-    });
+    await storeRefreshToken(refreshToken, user.id, user.role);
 
     await recordLoginAttempt({ userId: user.id, email, success: true, ip, userAgent });
 
@@ -84,21 +91,19 @@ export const refresh = async (oldRefreshToken: string) => {
         throw new Error('INVALID_REFRESH_TOKEN');
     }
 
-    let storedToken: { id: number; expiresAt: Date };
-    try {
-        storedToken = await prisma.refreshToken.delete({ where: { token: oldRefreshToken } });
-    } catch (err) {
-        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025') {
-            logger.warn(
-                { userId: payload.userId },
-                'Refresh token already consumed (concurrent request or reuse) - rejecting without mass session invalidation'
-            );
-            throw new Error('INVALID_REFRESH_TOKEN');
-        }
-        throw err;
+    const raw = await redis.getdel(refreshKey(oldRefreshToken));
+
+    if (!raw) {
+        logger.warn(
+            { userId: payload.userId },
+            'Refresh token already consumed (concurrent request or reuse) - rejecting without mass session invalidation'
+        );
+        throw new Error('INVALID_REFRESH_TOKEN');
     }
 
-    if (storedToken.expiresAt < new Date()) {
+    const stored = JSON.parse(raw) as StoredRefreshToken;
+
+    if (stored.expiresAt < Date.now()) {
         logger.warn({ userId: payload.userId }, 'Refresh attempt with expired token');
         throw new Error('INVALID_REFRESH_TOKEN');
     }
@@ -111,14 +116,7 @@ export const refresh = async (oldRefreshToken: string) => {
     }
 
     const { accessToken, refreshToken } = generateTokens(user.id, user.role);
-
-    await prisma.refreshToken.create({
-        data: {
-            token: refreshToken,
-            userId: user.id,
-            expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-        }
-    })
+    await storeRefreshToken(refreshToken, user.id, user.role);
 
     logger.info({ userId: user.id }, 'Token refreshed');
 
@@ -126,6 +124,6 @@ export const refresh = async (oldRefreshToken: string) => {
 }
 
 export const logout = async (refreshToken: string) => {
-    await prisma.refreshToken.deleteMany({ where: { token: refreshToken } });
+    await redis.del(refreshKey(refreshToken));
     logger.info('User logged out');
 }

@@ -49,3 +49,6 @@ export const DEFAULT_PERIOD_HOURS = 24;
 export const RETRYABLE_STATUS_CODES = new Set([429, 503]);
 export const MAX_RETRIES = 2;
 export const BASE_RETRY_DELAY_MS = 500;
+
+export const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const REFRESH_GRACE_MS = 60 * 1000;

@@ -5,17 +5,19 @@ vi.mock('../src/prisma.js', () => ({
         user: {
             findUnique: vi.fn(),
         },
-        refreshToken: {
-            create: vi.fn(),
-            delete: vi.fn(),
-            deleteMany: vi.fn(),
-        },
         loginAttempt: {
             create: vi.fn(),
         },
     },
 }));
 
+vi.mock('../redis.js', () => ({
+    redis: {
+        set: vi.fn(),
+        getdel: vi.fn(),
+        del: vi.fn(),
+    },
+}));
 
 vi.mock('bcrypt', () => ({
     default: {
@@ -43,6 +45,7 @@ vi.mock('../src/utils/logger.js', () => ({
 }));
 
 import { prisma } from '../src/prisma.js';
+import { redis} from "../redis.js";
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import * as usersService from '../src/services/users.service.js';
@@ -122,7 +125,7 @@ describe('auth.services', () => {
             await expect(authService.login('test@example.com', 'wrongPassword', TEST_IP, TEST_USER_AGENT))
                 .rejects.toThrow('INVALID_CREDENTIALS');
 
-            expect(prisma.refreshToken.create).not.toHaveBeenCalled();
+            expect(redis.set).not.toHaveBeenCalled();
             expect(prisma.loginAttempt.create).toHaveBeenCalledWith({
                 data: {
                     userId: 1,
@@ -149,13 +152,11 @@ describe('auth.services', () => {
             const result = await authService.login('test@example.com', 'correctPassword', TEST_IP, TEST_USER_AGENT);
 
             expect(result).toEqual({ accessToken: 'access-token', refreshToken: 'refresh-token' });
-            expect(prisma.refreshToken.create).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    data: expect.objectContaining({
-                        token: 'refresh-token',
-                        userId: 1,
-                    }),
-                })
+            expect(redis.set).toHaveBeenCalledWith(
+                expect.stringMatching(/^refresh:[a-f0-9]{64}$/),
+                expect.stringContaining('"userId":1'),
+                'PX',
+                expect.any(Number)
             );
             expect(prisma.loginAttempt.create).toHaveBeenCalledWith({
                 data: {
@@ -196,25 +197,20 @@ describe('auth.services', () => {
             await expect(authService.refresh('bad-token'))
                 .rejects.toThrow('INVALID_REFRESH_TOKEN');
 
-            expect(prisma.refreshToken.delete).not.toHaveBeenCalled();
+            expect(redis.getdel).not.toHaveBeenCalled();
         });
 
-        it('бросает ошибку, если refresh-токен уже был использован', async () => {
+        it('бросает ошибку, если refresh-токен уже был использован (не найден в Redis)', async () => {
             vi.mocked(jwt.verify).mockReturnValue({
                 userId: 1,
                 role: 'USER',
             } as any);
 
-            vi.mocked(prisma.refreshToken.delete).mockRejectedValue({
-                code: 'P2025',
-                message: 'Record not found',
-            } as any);
+            vi.mocked(redis.getdel).mockResolvedValue(null);
 
             await expect(
                 authService.refresh('valid-but-unknown-token')
-            ).rejects.toThrow('Record not found');
-
-            expect(prisma.refreshToken.deleteMany).not.toHaveBeenCalled();
+            ).rejects.toThrow('INVALID_REFRESH_TOKEN');
         });
 
         it('бросает ошибку, если токен просрочен', async () => {
@@ -223,10 +219,11 @@ describe('auth.services', () => {
                 role: 'USER',
             } as any);
 
-            vi.mocked(prisma.refreshToken.delete).mockResolvedValue({
-                id: 10,
-                expiresAt: new Date(Date.now() - 1000),
-            } as any);
+            vi.mocked(redis.getdel).mockResolvedValue(JSON.stringify({
+                userId: 1,
+                role: 'USER',
+                expiresAt: Date.now() - 1000,
+            }));
 
             await expect(
                 authService.refresh('expired-token')
@@ -241,10 +238,11 @@ describe('auth.services', () => {
                 role: 'USER',
             } as any);
 
-            vi.mocked(prisma.refreshToken.delete).mockResolvedValue({
-                id: 10,
-                expiresAt: new Date(Date.now() + 60 * 60 * 1000),
-            } as any);
+            vi.mocked(redis.getdel).mockResolvedValue(JSON.stringify({
+                userId: 1,
+                role: 'USER',
+                expiresAt: Date.now() + 60 * 60 * 1000,
+            }));
 
             vi.mocked(prisma.user.findUnique).mockResolvedValue(null);
 
@@ -259,10 +257,11 @@ describe('auth.services', () => {
                 role: 'USER',
             } as any);
 
-            vi.mocked(prisma.refreshToken.delete).mockResolvedValue({
-                id: 10,
-                expiresAt: new Date(Date.now() + 60 * 60 * 1000),
-            } as any);
+            vi.mocked(redis.getdel).mockResolvedValue(JSON.stringify({
+                userId: 1,
+                role: 'USER',
+                expiresAt: Date.now() + 60 * 60 * 1000,
+            }));
 
             vi.mocked(prisma.user.findUnique).mockResolvedValue({
                 id: 1,
@@ -275,19 +274,13 @@ describe('auth.services', () => {
 
             const result = await authService.refresh('old-refresh-token');
 
-            expect(prisma.refreshToken.delete).toHaveBeenCalledWith({
-                where: {
-                    token: 'old-refresh-token',
-                },
-            });
+            expect(redis.getdel).toHaveBeenCalledWith(expect.stringMatching(/^refresh:[a-f0-9]{64}$/));
 
-            expect(prisma.refreshToken.create).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    data: expect.objectContaining({
-                        token: 'new-refresh-token',
-                        userId: 1,
-                    }),
-                })
+            expect(redis.set).toHaveBeenCalledWith(
+                expect.stringMatching(/^refresh:[a-f0-9]{64}$/),
+                expect.stringContaining('"userId":1'),
+                'PX',
+                expect.any(Number)
             );
 
             expect(result).toEqual({
@@ -301,11 +294,11 @@ describe('auth.services', () => {
         it('удаляет refresh-токен по значению токена', async () => {
             await authService.logout('some-refresh-token');
 
-            expect(prisma.refreshToken.deleteMany).toHaveBeenCalledWith({ where: { token: 'some-refresh-token' } });
+            expect(redis.del).toHaveBeenCalledWith(expect.stringMatching(/^refresh:[a-f0-9]{64}$/));
         });
 
-        it('не бросает ошибку, если токена уже нет в БД (идемпотентность)', async () => {
-            vi.mocked(prisma.refreshToken.deleteMany).mockResolvedValue({ count: 0 } as any);
+        it('не бросает ошибку, если токена уже нет в Redis (идемпотентность)', async () => {
+            vi.mocked(redis.del).mockResolvedValue(0 as any);
 
             await expect(authService.logout('already-deleted-token')).resolves.not.toThrow();
         });
