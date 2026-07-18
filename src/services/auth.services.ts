@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import { prisma } from '../prisma.js';
 import { redis} from "../../redis.js";
 import * as usersService from './users.service.js';
+import { notifyIfNewDevice } from '../hooks/onNewDeviceLogin.js';
 import { logger } from '../utils/logger.js';
 import type { LoginAttempt } from '../types/login-attempt.js';
 import {REFRESH_GRACE_MS, REFRESH_TTL_MS} from "../constants/app.constants.js";
@@ -69,6 +70,8 @@ export const login = async (email: string, password: string, ip: string, userAge
         await recordLoginAttempt({ userId: user.id, email, success: false, ip, userAgent });
         throw new Error('INVALID_CREDENTIALS');
     }
+
+    await notifyIfNewDevice(user.id, ip, userAgent);
 
     const { accessToken, refreshToken } = generateTokens(user.id, user.role);
     await storeRefreshToken(refreshToken, user.id, user.role);

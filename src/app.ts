@@ -1,4 +1,5 @@
 import express from 'express';
+import { createYoga, createSchema } from 'graphql-yoga';
 import usersRouter from './routes/users.routes.js';
 import { errorHandler } from "./middlewares/errorHandler.js";
 import authRoutes from "./routes/auth.routes.js";
@@ -9,6 +10,9 @@ import helmet from "helmet";
 import { pinoHttp } from 'pino-http';
 import { logger } from "./utils/logger.js";
 import { allowedOrigins, registerLimit, loginLimit, refreshLimit, insightsLimit } from './constants/app.constants.js';
+import { typeDefs } from './graphql/schema.js';
+import { resolvers } from './graphql/resolvers.js';
+import { createContext } from './graphql/context.js';
 
 const app = express();
 
@@ -26,6 +30,14 @@ app.use(cookieParser());
 app.get('/', (_req, res) => {
     res.json({ message: 'Server is running' })
 })
+
+const yoga = createYoga({
+    schema: createSchema({ typeDefs, resolvers }),
+    context: createContext,
+    graphqlEndpoint: '/graphql'
+});
+
+app.use('/graphql', yoga);
 
 app.use('/auth/register', registerLimit);
 app.use('/auth/login', loginLimit);

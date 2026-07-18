@@ -40,6 +40,24 @@ enum Role {
   ADMIN
 }
 
+enum NotificationType {
+  NEW_DEVICE_LOGIN
+}
+
+model Notification {
+  id        Int              @id @default(autoincrement())
+  userId    Int
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  message   String
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  @@index([userId, createdAt])
+  @@index([userId, read])
+  @@map("notifications")
+}
+
 model User {
   id            Int            @id @default(autoincrement())
   email         String         @unique
@@ -49,6 +67,7 @@ model User {
   createdAt     DateTime       @default(now())
   refreshTokens RefreshToken[]
   loginAttempts LoginAttempt[]
+  notifications Notification[]
 
   @@map("users")
 }
