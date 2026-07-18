@@ -1,12 +1,15 @@
 # AuthBackend
 
-Backend-сервис аутентификации и управления пользователями на Express + TypeScript + Prisma + PostgreSQL. JWT access/refresh токены, ролевая модель (USER/ADMIN), rate limiting, валидация через Zod, AI-аналитика попыток входа через Gemini API.
+Backend-сервис аутентификации и управления пользователями на Express + TypeScript + Prisma + PostgreSQL. JWT access/refresh токены, ролевая модель (USER/ADMIN), rate limiting, валидация через Zod, AI-аналитика попыток входа через Gemini API. Уведомления о входах с новых устройств доступны через GraphQL (запросы, мутации и live-подписки).
 
 ## Стек
 
 - **Runtime:** Node.js, TypeScript (ESM)
 - **Фреймворк:** Express 5
+- **API:** REST + GraphQL (`graphql-yoga`) — оба смонтированы на одном Express-приложении
 - **БД:** PostgreSQL + Prisma ORM (adapter-pg)
+- **Кэш/сессии:** Redis (ioredis) — хранение refresh-токенов
+- **Realtime:** Socket.IO — live-события rate-limit'а поверх того же HTTP-сервера
 - **Аутентификация:** JWT (access + refresh токены), bcrypt для хэширования паролей
 - **Валидация:** Zod
 - **Логирование:** Pino / pino-http
@@ -18,6 +21,7 @@ Backend-сервис аутентификации и управления пол
 
 - Node.js 20+
 - PostgreSQL (локально или через Docker)
+- Redis (локально или через Docker)
 - npm
 
 ## Установка
@@ -37,6 +41,8 @@ JWT_REFRESH_SECRET="замените-на-другую-длинную-случа
 PORT=5000
 FRONTEND_URL=http://localhost:5173
 GEMINI_API_KEY="ваш-ключ-из-Google-AI-Studio"
+REDIS_PASSWORD="замените-на-пароль-redis"
+REDIS_URL="redis://:замените-на-пароль-redis@localhost:6379"
 ```
 
 | Переменная | Обязательна | Описание |
@@ -44,18 +50,20 @@ GEMINI_API_KEY="ваш-ключ-из-Google-AI-Studio"
 | `DATABASE_URL` | да | Строка подключения к PostgreSQL |
 | `JWT_ACCESS_SECRET` | да | Секрет для подписи access-токенов |
 | `JWT_REFRESH_SECRET` | да | Секрет для подписи refresh-токенов |
+| `REDIS_URL` | да | Строка подключения к Redis (хранение refresh-токенов) — без неё сервер не стартует |
+| `REDIS_PASSWORD` | да (для `docker-compose`) | Пароль Redis, подставляется в `REDIS_URL` и в healthcheck контейнера |
 | `PORT` | нет (по умолчанию `3000`) | Порт сервера |
-| `FRONTEND_URL` | нет (по умолчанию `http://localhost:5173`) | Разрешённый origin для CORS (через запятую, если несколько) |
+| `FRONTEND_URL` | нет (по умолчанию `http://localhost:5173`) | Разрешённый origin для CORS и Socket.IO (через запятую, если несколько) |
 | `GEMINI_API_KEY` | нет* | Ключ Gemini API (бесплатный тир, [aistudio.google.com](https://aistudio.google.com/apikey)). Без него `/admin/insights` продолжает отдавать статистику, но без AI-саммари |
 
 \* Не обязательна для старта сервера — читается лениво, только при вызове `/admin/insights`.
 
-## База данных
+## База данных и Redis
 
-Поднять PostgreSQL через Docker:
+Поднять PostgreSQL и Redis через Docker:
 
 ```bash
-docker compose up -d postgres
+docker compose up -d postgres redis
 ```
 
 Применить миграции и сгенерировать Prisma Client:
@@ -158,22 +166,70 @@ npm run test:coverage # с покрытием
 
 В промпт, который уходит в Gemini, никогда не попадают email, пароли или токены — только агрегированные числа и хеши (см. `src/services/insights.service.ts`).
 
+### GraphQL (`/graphql`)
+
+Отдельная точка входа на том же порту, смонтирована через `graphql-yoga`. Требует тот же `Authorization: Bearer <accessToken>`, что и REST — авторизация читается в `src/graphql/context.ts` и проверяется в резолверах. В браузере `/graphql` отдаёт встроенный GraphiQL для ручных запросов.
+
+Схема целиком — уведомления пользователя о входах с новых устройств:
+
+```graphql
+type Notification {
+  id: Int!
+  type: NotificationType!   # NEW_DEVICE_LOGIN
+  message: String!
+  read: Boolean!
+  createdAt: String!
+}
+
+type Query {
+  notifications: [Notification!]!             # только свои уведомления
+}
+
+type Mutation {
+  markNotificationRead(id: Int!): Notification!  # только свои
+}
+
+type Subscription {
+  notificationAdded: Notification!             # live-события через SSE
+}
+```
+
+Логика "нового устройства" в `checkNewDevice` (`src/services/notifications.service.ts`) — та же, что уже использовалась в `/admin/insights`: сравнение `ip`/`userAgent` текущего входа с историей успешных `login_attempts` пользователя. Срабатывает на `POST /auth/login` через хук `src/hooks/onNewDeviceLogin.ts`, до записи текущей попытки в историю. Уведомление создаётся в БД и одновременно публикуется в `Subscription.notificationAdded` через общий `PubSub` (`src/graphql/pubsub.ts`), с топиком, привязанным к `userId` — так подписка каждого пользователя видит только свои события.
+
+Без валидного токена любой Query/Mutation/Subscription-запрос возвращает ошибку `extensions.code: "UNAUTHENTICATED"`.
+
+### Socket.IO
+
+Поднимается поверх того же HTTP-сервера в `src/index.ts` (`initSocket`), не требует аутентификации. При подключении клиент автоматически попадает в комнату по своему IP (`rl:<ip>`). Когда любой из rate-limit'ов (`register`, `login`, `refresh`, `insights`) срабатывает для этого IP, всем сокетам в его комнате рассылается событие:
+
+```ts
+socket.on('rateLimited', (payload: { limiter: string; resetAt: string; retryAfterMs: number }) => {
+  // ...
+});
+```
+
+Используется, чтобы фронтенд мог показать обратный отсчёт до снятия ограничения, не опрашивая REST повторными запросами.
+
 ## Структура проекта
 
 ```
+redis.ts         # инициализация ioredis-клиента
 src/
   app.ts         # конфигурация Express-приложения (без запуска сервера)
-  index.ts       # точка входа, app.listen
-  controllers/   # обработчики запросов
+  index.ts       # точка входа, app.listen, initSocket
+  socket.ts      # Socket.IO: комнаты по IP, событие rateLimited
+  controllers/   # обработчики REST-запросов
   services/      # бизнес-логика, работа с Prisma, интеграция с Gemini
+  hooks/         # побочные эффекты на доменные события (напр. уведомление о новом устройстве при логине)
+  graphql/       # GraphQL-слой: schema.ts, resolvers.ts, context.ts, pubsub.ts
   middlewares/   # auth, роли, валидация, обработка ошибок
-  routes/        # регистрация маршрутов
+  routes/        # регистрация REST-маршрутов
   schemas/       # Zod-схемы валидации
   types/         # расширения типов Express
   constants/     # конфигурационные константы, rate-limit'ы
   utils/         # логгер и т.п.
 prisma/
-  schema.prisma  # модели User, RefreshToken, LoginAttempt
+  schema.prisma  # модели User, RefreshToken, LoginAttempt, Notification
   migrations/    # история миграций БД
 ```
 
